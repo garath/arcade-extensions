@@ -4,42 +4,100 @@ trigger:
 pr:
   - main
 
-stages:
-- stage: Build
-  displayName: Build
-  jobs:
-  - job: build_Windows
-    displayName: Build (Windows)
-    pool:
-      ${{ if eq(variables['System.TeamProject'], 'public') }}:
-        vmImage: windows-2019
-      ${{ if eq(variables['System.TeamProject'], 'internal') }}:
-        name: NetCore1ESPool-Internal
-        demands: ImageOverride -equals windows.vs2019.amd64
+schedules:
+  - cron: 0 12 * * 1
+    displayName: Weekly Monday CodeQL/Semmle run
+    branches:
+      include:
+      - main
+    always: true
 
-    steps:
-    - checkout: self
-      clean: all
+parameters:
+  # By default, manual pipeline runs do not run CodeQL.
+- name: runCodeQL3000
+  default: false
+  displayName: Run CodeQL Tasks
+  type: boolean
 
-    - task: NodeTool@0
-      displayName: Use node 10
-      inputs:
-        versionSpec: "10.x"
+variables:
+  # This is a CodeQL run if:
+  #  - this is a scheduled run (the only scheduled runs are CodeQL runs), or
+  #  - this is a manual run _and_ CodeQL was explicitly requested
+- name: runCodeQL3000
+  value: ${{ or(eq(variables['Build.Reason'], 'Schedule'), and(eq(variables['Build.Reason'], 'Manual'), eq(parameters.runCodeQL3000, 'true'))) }}
 
-    # restore
-    - script: restore.cmd
-      displayName: Restore
-    # Build
-    - script: build.cmd
-      displayName: Build
+jobs:
+- job: build_Windows
+  displayName: Build (Windows)
+  pool:
+    ${{ if eq(variables['System.TeamProject'], 'public') }}:
+      vmImage: windows-2019
+    ${{ if eq(variables['System.TeamProject'], 'internal') }}:
+      name: NetCore1ESPool-Internal
+      demands: ImageOverride -equals windows.vs2019.amd64
+  
+  variables:
+    # Do not let CodeQL3000 Extension gate scan frequency.
+  - name: Codeql.Cadence
+    value: 0
+    # Enable CodeQL3000 unconditionally so it may be run on any branch.
+  - name: Codeql.Enabled
+    value: ${{ eq(variables['runCodeQL3000'], 'true') }}
+    # Always publish to TSA
+  - name: Codeql.TSAEnabled
+    value: true
 
-    # Package Extension
+  steps:
+  - checkout: self
+    clean: true
+
+  # Azure DevOps Extension development requirements set the Node version in use
+  - task: NodeTool@0
+    displayName: Use node 10
+    inputs:
+      versionSpec: "10.x"
+
+  # restore
+  - script: restore.cmd
+    displayName: Restore
+
+  # The CodeQL 3000 extension requires TSA configuration in a particular format
+  # Create this using data from the variable group
+  - ${{ if eq(variables['runCodeQL3000'], 'true') }}:
+    - pwsh: |
+        New-Item .config -ItemType Directory
+        @{ `
+          instanceUrl = $(_TsaInstanceURL);`
+          template = $(_TsaTemplateName);`
+          projectName = $(_TsaProjectName);`
+          areaPath = $(_TsaBugAreaPath);`
+          iterationPath = $(_TsaIterationPath);`
+          notificationAliases = @($(_TsaNotificationEmail));`
+          repositoryName = "arcade-extensions";`
+          codebaseName = "arcade-extensions";`
+        } | ConvertTo-Json | Out-File -Encoding utf8 .config/tsaoptions.json
+      displayName: Write CodeQL3000 TSA Configuration
+
+    - task: CodeQL3000Init@0
+      displayName: CodeQL Initialize
+
+  # Build
+  - script: build.cmd
+    displayName: Build
+
+  - ${{ if eq(variables['runCodeQL3000'], 'true') }}:
+    - task: CodeQL3000Finalize@0
+      displayName: CodeQL Finalize
+
+  # Package Extension
+  - ${{ if ne(variables['runCodeQL3000'], 'true') }}:
     - script: package.cmd
       displayName: Package Extension
 
     # Generate SBOM
     - template: eng\generate-sbom.yml
 
+    # Publish artifacts
     - task: PublishBuildArtifacts@1
       displayName: Publish extension artifact
       condition: succeeded()
