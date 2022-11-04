@@ -25,6 +25,8 @@ variables:
   #  - this is a manual run _and_ CodeQL was explicitly requested
 - name: runCodeQL3000
   value: ${{ or(eq(variables['Build.Reason'], 'Schedule'), and(eq(variables['Build.Reason'], 'Manual'), eq(parameters.runCodeQL3000, 'true'))) }}
+- ${{ if or(eq(variables['Build.Reason'], 'Schedule'), and(eq(variables['Build.Reason'], 'Manual'), eq(parameters.runCodeQL3000, 'true'))) }}:
+  - group: SDL_Settings
 
 jobs:
 - job: build_Windows
